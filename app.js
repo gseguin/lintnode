@@ -1,11 +1,11 @@
-/* HTTP interface to JSLint.
+/* HTTP interface to JSHint.
 
    Takes roughly half the time to jslint something with this than to
    start up a new rhino instance on every invocation.
 
    Invoke from bash script like:
 
-     curl --form source="<${1}" ${JSLINT_URL}
+     curl --form source="<${1}" ${JSHINT_URL}
 
    If you use source="@${1}" instead, curl does it like a file upload.
    That includes a filename, which is nice, but has express make a
@@ -14,7 +14,7 @@
 
 /*global process, require */
 var express = require("express");
-var JSLINT = require('./fulljslint');
+var JSHINT = require('./jshint/jshint');
 var fs = require('fs');
 
 var app = express.createServer();
@@ -23,42 +23,36 @@ app.configure(function () {
     app.use(require('connect-form')({keepExtensions: true}));
     app.use(express.errorHandler(
         { dumpExceptions: true, showStack: true }));
-    app.use(express.bodyDecoder());
+    app.use(express.bodyParser());
 });
 
 var jslint_port = 3003;
 
 /* copied from jslint's rhino.js */
-var jslint_options = {
+var theGoodParts = {
     bitwise: true,
-    eqeqeq: true,
     immed: true,
     newcap: true,
     nomen: true,
     onevar: true,
     plusplus: true,
     regexp: true,
-    rhino: true,
     undef: true,
     white: true
 };
 
 var outputErrors = function (errors) {
-    var e, i, output = [];
+    var e, i, len, output = [];
     // debug("Handling " + errors.length + "errors" + '\n');
     function write(s) {
         output.push(s + '\n');
     }
-    /* This formatting is copied from JSLint's rhino.js, to be compatible with
-       the command-line invocation. */
-    for (i = 0; i < errors.length; i += 1) {
+    for (i = 0, len = errors.length; i < len; i += 1) {
         e = errors[i];
         if (e) {
-            write('Lint at line ' + e.line + ' character ' +
-                        e.character + ': ' + e.reason);
-            write((e.evidence || '').
-                        replace(/^\s*(\S*(\s+\S+)*)\s*$/, "$1"));
-            write('');
+            write('Line ' + e.line + ', character ' +  e.character + ': ' + e.evidence);
+			write(e.reason);
+            if (i != len-1) write('');
         }
     }
     return output.join('');
@@ -75,19 +69,9 @@ app.post('/jslint', function (request, res) {
     }
     return request.form.complete(function (err, fields, files) {
         var headers = {'Content-Type': 'text/plain'};
-
-        function doLint(sourcedata) {
-            var passed, results;
-            passed = JSLINT.JSLINT(sourcedata, jslint_options);
-            if (passed) {
-                // debug("no errors\n");
-                results = "jslint: No problems found in " + filename + "\n";
-            } else {
-                results = outputErrors(JSLINT.JSLINT.errors);
-                // debug("results are" + results);
-            }
-            return results;
-        }
+		
+		var jsHintOpts = (fields.opts)?JSON.parse(fields.opts):theGoodParts;
+		var passed = false;
 
         if (files.source) {
             // FIXME: It's pretty silly that we have express write the upload to
@@ -103,17 +87,23 @@ app.post('/jslint', function (request, res) {
                 });
         } else {
             filename = fields.filename;
-            res.send(doLint(fields.source), headers, 200);
+			passed = JSHINT.JSHINT(fields.source, jsHintOpts);
+			
+			if (passed) {
+				res.send("OK\n", headers, 200);
+			} else {
+				res.send(outputErrors(JSHINT.JSHINT.errors)+"\n"+JSHINT.JSHINT.errors.length+" error(s)\n", headers, 400);
+			}
         }
     });
 });
 
 
-/* This action always return some JSLint problems. */
+/* This action always return some JSHint problems. */
 var exampleFunc = function (req, res) {
-    JSLINT.JSLINT("a = function(){ return 7 + x }()",
+    JSHINT.JSHINT("a = function(){ return 7 + x }()",
         jslint_options);
-    res.send(outputErrors(JSLINT.JSLINT.errors),
+    res.send(outputErrors(JSHINT.JSHINT.errors),
         {'Content-Type': 'text/plain'});
 };
 
@@ -121,7 +111,7 @@ app.get('/example/errors', exampleFunc);
 app.post('/example/errors', exampleFunc);
 
 
-/* This action always returns JSLint's a-okay message. */
+/* This action always returns JSHint's a-okay message. */
 app.post('/example/ok', function (req, res) {
     res.send("jslint: No problems found in example.js\n",
         {'Content-Type': 'text/plain'});
